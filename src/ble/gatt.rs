@@ -2,38 +2,27 @@ use super::advertiser::{Advertiser, AdvertiserBuilder};
 use super::{ble_task, mpsl_task, BleResources};
 use super::{hid::*, BleServer};
 use super::{stick::*, BleController};
-use defmt::info;
+use defmt::{info, warn};
 use embassy_executor::Spawner;
-use embassy_futures::select::select;
-use embassy_futures::select::Either;
 use microbit_bsp::ble::{MultiprotocolServiceLayer, SoftdeviceError};
 use static_cell::StaticCell;
 use trouble_host::prelude::*;
-use trouble_host::types::gatt_traits::GattValue;
 
 /// Allow a central to decide which player this controller belongs to
 #[gatt_service(uuid = "8f701cf1-b1df-42a1-bb5f-6a1028c793b0")]
 pub struct Player {
-    #[characteristic(uuid = "e3d1afe4-b414-44e3-be54-0ea26c394eba", read, write, on_write = on_write)]
+    #[characteristic(uuid = "e3d1afe4-b414-44e3-be54-0ea26c394eba", read, write, notify)]
     index: u8,
 }
 
-fn on_write(_: &Connection<'_>, value: &[u8]) -> Result<(), ()> {
-    if let Ok(index) = u8::from_gatt(value) {
-        info!("Player index set to {:?}", index);
-    };
-    Ok(())
-}
-
-#[gatt_server(attribute_data_size = 100)]
+#[gatt_server]
 pub struct Server {
-    // pub bas: BatteryService,
     pub hid: ButtonService,
     pub stick: StickService,
     pub player: Player,
 }
 
-impl Server<'static, 'static, BleController> {
+impl BleServer {
     pub fn start_gatt(
         name: &'static str,
         spawner: Spawner,
@@ -48,21 +37,23 @@ impl Server<'static, 'static, BleController> {
 
         let resources = {
             static RESOURCES: StaticCell<BleResources> = StaticCell::new();
-            RESOURCES.init(BleResources::new(PacketQos::None))
+            RESOURCES.init(BleResources::new())
         };
-        let (stack, peripheral, _, runner) = trouble_host::new(controller, resources)
-            .set_random_address(address)
-            .build();
+        let stack = {
+            static STACK: StaticCell<Stack<'static, BleController, DefaultPacketPool>> =
+                StaticCell::new();
+            STACK.init(trouble_host::new(controller, resources).set_random_address(address))
+        };
+        let Host {
+            peripheral, runner, ..
+        } = stack.build();
         let server = {
-            static SERVER: StaticCell<BleServer<'_>> = StaticCell::new();
+            static SERVER: StaticCell<BleServer> = StaticCell::new();
             SERVER.init(
-                Server::new_with_config(
-                    stack,
-                    GapConfig::Peripheral(PeripheralConfig {
-                        name,
-                        appearance: &appearance::GAMEPAD,
-                    }),
-                )
+                Server::new_with_config(GapConfig::Peripheral(PeripheralConfig {
+                    name,
+                    appearance: &appearance::human_interface_device::GAMEPAD,
+                }))
                 .expect("Error creating Gatt Server"),
             )
         };
@@ -74,17 +65,20 @@ impl Server<'static, 'static, BleController> {
 }
 
 /// A BLE GATT server
-pub async fn gatt_server_task(server: &BleServer<'_>, conn: &Connection<'_>) {
+pub async fn gatt_server_task(
+    server: &BleServer,
+    conn: &GattConnection<'_, '_, DefaultPacketPool>,
+) {
     loop {
-        if let Either::First(event) = select(conn.next(), server.run()).await {
-            match event {
-                ConnectionEvent::Disconnected { reason } => {
-                    info!("[gatt] Disconnected: {:?}", reason);
-                    break;
-                }
-                ConnectionEvent::Gatt { event, .. } => match event {
-                    GattEvent::Read { value_handle } => {
-                        if value_handle == server.player.index.handle {
+        match conn.next().await {
+            GattConnectionEvent::Disconnected { reason } => {
+                info!("[gatt] Disconnected: {:?}", reason);
+                break;
+            }
+            GattConnectionEvent::Gatt { event } => {
+                match &event {
+                    GattEvent::Read(read) => {
+                        if read.handle() == server.player.index.handle {
                             let value = server.get(&server.player.index);
                             info!(
                                 "[gatt] Read Event to Player Index Characteristic: {:?}",
@@ -92,8 +86,8 @@ pub async fn gatt_server_task(server: &BleServer<'_>, conn: &Connection<'_>) {
                             );
                         }
                     }
-                    GattEvent::Write { value_handle } => {
-                        if value_handle == server.player.index.handle {
+                    GattEvent::Write(write) => {
+                        if write.handle() == server.player.index.handle {
                             let value = server.get(&server.player.index);
                             info!(
                                 "[gatt] Write Event to Player Index Characteristic: {:?}",
@@ -101,8 +95,14 @@ pub async fn gatt_server_task(server: &BleServer<'_>, conn: &Connection<'_>) {
                             );
                         }
                     }
-                },
+                    _ => {}
+                }
+                match event.accept() {
+                    Ok(reply) => reply.send().await,
+                    Err(e) => warn!("[gatt] error sending response: {:?}", e),
+                }
             }
+            _ => {}
         }
     }
     info!("Gatt server task finished");

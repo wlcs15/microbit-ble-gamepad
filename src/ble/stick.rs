@@ -1,12 +1,10 @@
 use defmt::info;
 use embassy_time::{Duration, Timer};
-use microbit_bsp::{
-    ble::SoftdeviceError,
-    embassy_nrf::{
-        interrupt::{self, InterruptExt as _},
-        peripherals::{P0_03, P0_04, SAADC},
-        saadc::{self, Input as _, Saadc},
-    },
+use microbit_bsp::embassy_nrf::{
+    interrupt::{self, InterruptExt as _},
+    peripherals::{P0_03, P0_04, SAADC},
+    saadc::{self, Saadc},
+    Peri,
 };
 use trouble_host::prelude::*;
 
@@ -25,11 +23,15 @@ pub struct StickService {
     y: i8,
 }
 
-pub fn init_analog_adc(x_pin: P0_03, y_pin: P0_04, adc: SAADC) -> Saadc<'static, 2> {
+pub fn init_analog_adc(
+    x_pin: Peri<'static, P0_03>,
+    y_pin: Peri<'static, P0_04>,
+    adc: Peri<'static, SAADC>,
+) -> Saadc<'static, 2> {
     let config = saadc::Config::default();
     interrupt::SAADC.set_priority(interrupt::Priority::P3);
-    let channel_cfg = saadc::ChannelConfig::single_ended(x_pin.degrade_saadc());
-    let channel_cfg2 = saadc::ChannelConfig::single_ended(y_pin.degrade_saadc());
+    let channel_cfg = saadc::ChannelConfig::single_ended(x_pin);
+    let channel_cfg2 = saadc::ChannelConfig::single_ended(y_pin);
     saadc::Saadc::new(adc, Irqs, config, [channel_cfg, channel_cfg2])
 }
 
@@ -59,11 +61,11 @@ impl Axis {
 }
 
 pub async fn analog_stick_task(
-    server: &BleServer<'_>,
-    conn: &Connection<'_>,
+    server: &BleServer,
+    conn: &GattConnection<'_, '_, DefaultPacketPool>,
     saadc: &mut Saadc<'_, 2>,
     display: &AsyncDisplay,
-) -> Result<(), BleHostError<SoftdeviceError>> {
+) -> Result<(), Error> {
     let debounce = Duration::from_millis(20);
     info!("analog stick service online");
     let mut buf = [0i16; 2];
@@ -79,10 +81,10 @@ pub async fn analog_stick_task(
         saadc.sample(&mut buf).await;
         // display the x and y values on the led matrix
         if let Some(x) = x_axis.changed(buf[0]) {
-            server.notify(&server.stick.x, conn, &x).await?;
+            server.stick.x.notify(conn, &x).await?;
         }
         if let Some(y) = y_axis.changed(buf[1]) {
-            server.notify(&server.stick.y, conn, &y).await?;
+            server.stick.y.notify(conn, &y).await?;
         }
         if !(x_axis.old == 0 && y_axis.old == 0) {
             // only display if the stick is not centered

@@ -10,7 +10,7 @@ use panic_probe as _;
 use defmt::info;
 use embassy_executor::Spawner;
 use embassy_time::Duration;
-use microbit_bsp::{display::Brightness, embassy_nrf::gpio::Pin as _, Microbit};
+use microbit_bsp::{display::Brightness, Microbit};
 
 use crate::{
     ble::{
@@ -46,10 +46,10 @@ async fn main(spawner: Spawner) {
         server,
         board.btn_a,
         board.btn_b,
-        to_button(board.p12.degrade()),
-        to_button(board.p13.degrade()),
-        to_button(board.p14.degrade()),
-        to_button(board.p15.degrade()),
+        to_button(board.p12),
+        to_button(board.p13),
+        to_button(board.p14),
+        to_button(board.p15),
     );
 
     let mut analog_stick = init_analog_adc(board.p1, board.p2, board.saadc);
@@ -61,7 +61,7 @@ async fn main(spawner: Spawner) {
     loop {
         display.display(QuestionMark, Duration::from_secs(2)).await;
         // advertise for connections
-        if let Ok(conn) = advertiser.advertise().await {
+        if let Ok(conn) = advertiser.advertise(server).await {
             let pause = Duration::from_secs(1);
             speaker.play_tune(Tune::Connect).await;
             display.display_blocking(Heart, pause).await;

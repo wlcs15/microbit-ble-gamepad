@@ -1,7 +1,7 @@
 use defmt::info;
 use embassy_futures::select;
 use embassy_time::{Duration, Timer};
-use microbit_bsp::{ble::SoftdeviceError, Button};
+use microbit_bsp::Button;
 use trouble_host::prelude::*;
 
 use crate::io::display::{self, DisplayFrame};
@@ -36,16 +36,15 @@ pub struct GamepadButton {
 /// Notify when this button is pressed or released
 pub async fn notify_button_state(
     button: &mut GamepadButton,
-    connection: &Connection<'_>,
+    connection: &GattConnection<'_, '_, DefaultPacketPool>,
     display: &display::AsyncDisplay,
-    server: &BleServer<'_>,
-) -> Result<(), BleHostError<SoftdeviceError>> {
+) -> Result<(), Error> {
     let debounce = Duration::from_millis(50);
     info!("button {} service online", button.name);
     loop {
         button.input.wait_for_low().await;
         info!("button {} pressed", button.name);
-        server.notify(&button.ble_handle, connection, &true).await?;
+        button.ble_handle.notify(connection, &true).await?;
         display
             .display(
                 DisplayFrame::Letter(button.name),
@@ -55,25 +54,23 @@ pub async fn notify_button_state(
         Timer::after(debounce).await;
         button.input.wait_for_high().await;
         info!("button {} released", button.name);
-        server
-            .notify(&button.ble_handle, connection, &false)
-            .await?;
+        button.ble_handle.notify(connection, &false).await?;
         Timer::after(debounce).await;
     }
 }
 
 pub async fn buttons_task(
     buttons: &mut GamepadInputs,
-    conn: &Connection<'_>,
+    conn: &GattConnection<'_, '_, DefaultPacketPool>,
     display: &display::AsyncDisplay,
 ) {
     let futures = [
-        notify_button_state(&mut buttons.b, conn, display, buttons.server),
-        notify_button_state(&mut buttons.a, conn, display, buttons.server),
-        notify_button_state(&mut buttons.c, conn, display, buttons.server),
-        notify_button_state(&mut buttons.d, conn, display, buttons.server),
-        notify_button_state(&mut buttons.e, conn, display, buttons.server),
-        notify_button_state(&mut buttons.f, conn, display, buttons.server),
+        notify_button_state(&mut buttons.b, conn, display),
+        notify_button_state(&mut buttons.a, conn, display),
+        notify_button_state(&mut buttons.c, conn, display),
+        notify_button_state(&mut buttons.d, conn, display),
+        notify_button_state(&mut buttons.e, conn, display),
+        notify_button_state(&mut buttons.f, conn, display),
     ];
     let _ = select::select_array(futures).await;
 }
@@ -92,7 +89,6 @@ impl GamepadButton {
 
 /// A struct containing all of the buttons on the microbit
 pub struct GamepadInputs {
-    server: &'static BleServer<'static>,
     pub a: GamepadButton,
     pub b: GamepadButton,
     pub c: GamepadButton,
@@ -104,7 +100,7 @@ pub struct GamepadInputs {
 impl GamepadInputs {
     /// Create a new GamepadInputs struct with the given pins
     pub fn new(
-        server: &'static BleServer<'_>,
+        server: &'static BleServer,
         a: Button,
         b: Button,
         c: Button,
@@ -113,7 +109,6 @@ impl GamepadInputs {
         f: Button,
     ) -> Self {
         Self {
-            server,
             a: GamepadButton::new('A', a, server.hid.button_a),
             b: GamepadButton::new('B', b, server.hid.button_b),
             c: GamepadButton::new('C', c, server.hid.button_c),

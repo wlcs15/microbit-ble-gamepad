@@ -4,11 +4,12 @@ use embassy_sync::{
     blocking_mutex::raw::ThreadModeRawMutex,
     channel::{Channel, Sender},
 };
+use microbit_bsp::embassy_nrf::Peri;
 use microbit_bsp::speaker::{self, Note, Pitch};
 use microbit_bsp::{
     embassy_nrf::{
         peripherals::{P0_00, PWM0},
-        pwm::SimplePwm,
+        pwm::{SimpleConfig, SimplePwm},
     },
     speaker::NamedPitch::*,
 };
@@ -32,7 +33,7 @@ pub struct AsyncAudio {
 
 impl AsyncAudio {
     /// Create a new instance of the audio driver
-    pub fn new(spawner: Spawner, pwm0: PWM0, speaker: P0_00) -> Self {
+    pub fn new(spawner: Spawner, pwm0: Peri<'static, PWM0>, speaker: Peri<'static, P0_00>) -> Self {
         // Spawn the audio driver task
         defmt::unwrap!(spawner.spawn(audio_driver_task(pwm0, speaker)));
         Self {
@@ -52,9 +53,10 @@ impl AsyncAudio {
 
 /// The audio driver task
 #[embassy_executor::task]
-async fn audio_driver_task(pwm0: PWM0, speaker: P0_00) {
+async fn audio_driver_task(pwm0: Peri<'static, PWM0>, speaker: Peri<'static, P0_00>) {
     info!("Audio driver task started");
-    let pwm = SimplePwm::new_1ch(pwm0, speaker);
+    let config = SimpleConfig::default();
+    let pwm = SimplePwm::new_1ch(pwm0, speaker, &config);
     let mut speaker = speaker::PwmSpeaker::new(pwm);
     loop {
         match AUDIO_CHANNEL.receive().await {

@@ -1,23 +1,25 @@
 use defmt::info;
 use trouble_host::prelude::*;
 
+use super::BleServer;
+
 /// BLE advertiser
 pub struct AdvertiserBuilder<'d, C: Controller> {
     /// Name of the device
     name: &'d str,
-    peripheral: Peripheral<'d, C>,
+    peripheral: Peripheral<'d, C, DefaultPacketPool>,
 }
 
 pub struct Advertiser<'d, C: Controller> {
     advertiser_data: [u8; 31],
     scan_data: [u8; 4],
-    peripheral: Peripheral<'d, C>,
+    peripheral: Peripheral<'d, C, DefaultPacketPool>,
 }
 
 /// A BLE advertiser
 impl<'d, C: Controller> AdvertiserBuilder<'d, C> {
     /// Create a new advertiser builder
-    pub fn new(name: &'d str, peripheral: Peripheral<'d, C>) -> Self {
+    pub fn new(name: &'d str, peripheral: Peripheral<'d, C, DefaultPacketPool>) -> Self {
         Self { name, peripheral }
     }
     /// Build the advertiser
@@ -33,7 +35,7 @@ impl<'d, C: Controller> AdvertiserBuilder<'d, C> {
         AdStructure::encode_slice(
             &[
                 AdStructure::Flags(LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED),
-                AdStructure::ServiceUuids16(&[Uuid::Uuid16([0x0f, 0x18])]),
+                AdStructure::ServiceUuids16(&[[0x0f, 0x18]]),
                 AdStructure::CompleteLocalName(name.as_bytes()),
             ],
             &mut advertiser_data[..],
@@ -50,8 +52,11 @@ impl<'d, C: Controller> AdvertiserBuilder<'d, C> {
 
 impl<'d, C: Controller> Advertiser<'d, C> {
     /// Advertise and connect to a device with the given name
-    pub async fn advertise(&mut self) -> Result<Connection<'d>, BleHostError<C::Error>> {
-        let mut advertiser = self
+    pub async fn advertise(
+        &mut self,
+        server: &'d BleServer,
+    ) -> Result<GattConnection<'d, 'd, DefaultPacketPool>, BleHostError<C::Error>> {
+        let advertiser = self
             .peripheral
             .advertise(
                 &Default::default(),
@@ -62,7 +67,7 @@ impl<'d, C: Controller> Advertiser<'d, C> {
             )
             .await?;
         info!("advertising");
-        let conn = advertiser.accept().await?;
+        let conn = advertiser.accept().await?.with_attribute_server(server)?;
         info!("connection established");
         Ok(conn)
     }
